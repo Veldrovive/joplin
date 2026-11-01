@@ -368,6 +368,12 @@ export default class BaseApplication {
 		return false;
 	}
 
+	// Whether the app keeps running in the background, either with a GUI or as a headless service.
+	// Long-running apps sync and index changes as they happen.
+	protected isLongRunning() {
+		return this.hasGui();
+	}
+
 	public uiType() {
 		return this.hasGui() ? 'gui' : 'cli';
 	}
@@ -448,7 +454,7 @@ export default class BaseApplication {
 					ids: loadedMasterKeyIds,
 				});
 
-				if (this.hasGui()) {
+				if (this.isLongRunning()) {
 					void DecryptionWorker.instance().scheduleStart();
 
 					// Schedule a sync operation so that items that need to be encrypted
@@ -458,7 +464,7 @@ export default class BaseApplication {
 			},
 
 			'sync.interval': async () => {
-				if (this.hasGui()) reg.setupRecurrentSync();
+				if (this.isLongRunning()) reg.setupRecurrentSync();
 			},
 
 			'ai.enabled': async () => {
@@ -529,7 +535,7 @@ export default class BaseApplication {
 			refreshNotesUseSelectedNoteId = true;
 		}
 
-		if (this.hasGui() && ['NOTE_UPDATE_ONE', 'NOTE_DELETE', 'FOLDER_UPDATE_ONE', 'FOLDER_DELETE'].indexOf(action.type) >= 0) {
+		if (this.isLongRunning() && ['NOTE_UPDATE_ONE', 'NOTE_DELETE', 'FOLDER_UPDATE_ONE', 'FOLDER_DELETE'].indexOf(action.type) >= 0) {
 			if (!(await reg.syncTarget().syncStarted())) void reg.scheduleSync(reg.syncAsYouTypeInterval(), { syncSteps: Synchronizer.partialSyncSteps });
 			SearchEngine.instance().scheduleSyncTables();
 		}
@@ -658,11 +664,11 @@ export default class BaseApplication {
 			doRefreshFolders = 'now';
 		}
 
-		if (this.hasGui() && action.type === 'SYNC_GOT_ENCRYPTED_ITEM') {
+		if (this.isLongRunning() && action.type === 'SYNC_GOT_ENCRYPTED_ITEM') {
 			void DecryptionWorker.instance().scheduleStart();
 		}
 
-		if (this.hasGui() && action.type === 'SYNC_CREATED_OR_UPDATED_RESOURCE') {
+		if (this.isLongRunning() && action.type === 'SYNC_CREATED_OR_UPDATED_RESOURCE') {
 			void ResourceFetcher.instance().autoAddResources();
 		}
 

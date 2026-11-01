@@ -2,6 +2,7 @@ import BaseSyncTarget from './BaseSyncTarget';
 import Setting, { Env } from './models/Setting';
 import { reg } from './registry';
 import Synchronizer from './Synchronizer';
+import shim from './shim';
 
 const sync = {
 	start: jest.fn().mockReturnValue({}),
@@ -36,6 +37,20 @@ describe('registry', () => {
 	afterEach(() => {
 		Setting.setValue('sync.interval', 0);
 		reg.setupRecurrentSync();
+	});
+
+	it('should use the recurrent sync interval override instead of the setting', () => {
+		const setInterval = jest.spyOn(shim, 'setInterval');
+
+		reg.setRecurrentSyncIntervalOverride(20);
+		reg.setupRecurrentSync();
+		expect(setInterval).toHaveBeenLastCalledWith(expect.any(Function), 20 * 1000);
+
+		reg.setRecurrentSyncIntervalOverride(null);
+		reg.setupRecurrentSync();
+		expect(setInterval).toHaveBeenLastCalledWith(expect.any(Function), 300 * 1000);
+
+		setInterval.mockRestore();
 	});
 
 	describe('when on mobile data', () => {
