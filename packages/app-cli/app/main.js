@@ -39,6 +39,22 @@ try {
 	// be printed in app.ts
 }
 
+// Native modules used for AI embeddings. If they fail to load (e.g. no prebuilt binary for this
+// platform) the app still starts, with embeddings disabled. A warning is printed in app.ts
+let sqliteVec = null;
+try {
+	sqliteVec = require('sqlite-vec');
+} catch (error) {
+	sqliteVec = null;
+}
+
+let onnxRuntime = null;
+try {
+	onnxRuntime = require('onnxruntime-node');
+} catch (error) {
+	onnxRuntime = null;
+}
+
 const env = envFromArgs(process.argv);
 
 const fsDriver = new FsDriverNode();
@@ -73,7 +89,7 @@ function appVersion() {
 	return p.version;
 }
 
-shimInitCli({ sharp, keytar, appVersion, nodeSqlite });
+shimInitCli({ sharp, keytar, appVersion, nodeSqlite, sqliteVec, onnxRuntime });
 
 const logger = new Logger();
 Logger.initializeGlobalLogger(logger);

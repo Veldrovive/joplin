@@ -19,6 +19,8 @@ import { FolderEntity, NoteEntity } from '@joplin/lib/services/database/types';
 import initializeCommandService from './utils/initializeCommandService';
 import { cliUtils } from './cli-utils';
 import Cache from '@joplin/lib/Cache';
+import AiService from '@joplin/lib/services/ai/AiService';
+import LocalEmbeddingProvider from '@joplin/lib/services/ai/LocalEmbeddingProvider';
 
 type FolderOrNoteType = ModelType.Note | ModelType.Folder | 'folderOrNote';
 
@@ -224,6 +226,13 @@ export class Application extends BaseApplication {
 		return this.gui() && !this.gui().isDummy();
 	}
 
+	// One-shot commands must not run the background indexer. Otherwise a command run on a
+	// profile with no notes yet would complete the initial scan and mark it as done.
+	protected override async applyEmbeddingIndexerState() {
+		if (!this.hasGui()) return;
+		await super.applyEmbeddingIndexerState();
+	}
+
 	public findCommandByName(name: string) {
 		if (this.commands_[name]) return this.commands_[name];
 
@@ -398,6 +407,14 @@ export class Application extends BaseApplication {
 
 		this.initRedux();
 
+		// Must be done before the settings side effects are applied, as these check whether an
+		// embedding provider is available.
+		if (shim.onnxRuntime()) {
+			AiService.instance().setEmbeddingProvider(new LocalEmbeddingProvider());
+		} else {
+			this.logger().warn('onnxruntime-node could not be loaded - AI embeddings will not be available');
+		}
+
 		// Since the settings need to be loaded before the store is created, it will never
 		// receive the SETTING_UPDATE_ALL even, which mean state.settings will not be
 		// initialised. So we manually call dispatchUpdateAll() to force an update.
@@ -450,6 +467,8 @@ export class Application extends BaseApplication {
 			ResourceService.runInBackground();
 
 			RevisionService.instance().runInBackground();
+
+			await this.applyEmbeddingIndexerState();
 
 			this.dispatch({
 				type: 'TAG_UPDATE_ALL',

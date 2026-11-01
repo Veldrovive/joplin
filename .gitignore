@@ -77,6 +77,7 @@ packages/generator-joplin/generators/app/templates/script/publish/dist/
 packages/app-cli/app/LinkSelector.js
 packages/app-cli/app/ResourceServer.js
 packages/app-cli/app/app-gui.js
+packages/app-cli/app/app.test.js
 packages/app-cli/app/app.js
 packages/app-cli/app/autocompletion.js
 packages/app-cli/app/base-command.js
