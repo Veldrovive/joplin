@@ -18,6 +18,7 @@ class Registry {
 	private showErrorMessageBoxHandler_: (message: string)=> void;
 	private scheduleSyncId_: ReturnType<typeof shim.setTimeout> = null;
 	private recurrentSyncId_: ReturnType<typeof shim.setInterval> = null;
+	private recurrentSyncIntervalOverride_: number|null = null;
 	private db_: JoplinDatabase;
 	private isOnMobileData_ = false;
 	private dispatch_: Dispatch = (() => {}) as Dispatch;
@@ -246,6 +247,12 @@ class Registry {
 		}
 	};
 
+	// Overrides the `sync.interval` setting, in seconds, without changing it. Pass `null` to use
+	// the setting again. This allows intervals that the setting does not offer.
+	public setRecurrentSyncIntervalOverride(seconds: number|null) {
+		this.recurrentSyncIntervalOverride_ = seconds;
+	}
+
 	public setupRecurrentSync() {
 		this.setupRecurrentCalls_.push(true);
 
@@ -255,10 +262,12 @@ class Registry {
 				this.recurrentSyncId_ = null;
 			}
 
-			if (!Setting.value('sync.interval')) {
+			const interval: number = this.recurrentSyncIntervalOverride_ ?? Setting.value('sync.interval');
+
+			if (!interval) {
 				this.logger().debug('Recurrent sync is disabled');
 			} else {
-				this.logger().debug(`Setting up recurrent sync with interval ${Setting.value('sync.interval')}`);
+				this.logger().debug(`Setting up recurrent sync with interval ${interval}`);
 
 				if (Setting.value('env') === 'dev') {
 					this.logger().info('Recurrent sync operation DISABLED!!!');
@@ -268,7 +277,7 @@ class Registry {
 				this.recurrentSyncId_ = shim.setInterval(() => {
 					this.logger().info('Running background sync on timer...');
 					void this.scheduleSync(0, null, true);
-				}, 1000 * Setting.value('sync.interval'));
+				}, 1000 * interval);
 			}
 		} finally {
 			this.setupRecurrentCalls_.pop();

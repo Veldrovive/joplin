@@ -1384,6 +1384,7 @@ packages/lib/ArrayUtils.test.js
 packages/lib/ArrayUtils.js
 packages/lib/AsyncActionQueue.test.js
 packages/lib/AsyncActionQueue.js
+packages/lib/BaseApplication.test.js
 packages/lib/BaseApplication.js
 packages/lib/BaseModel.test.js
 packages/lib/BaseModel.js
