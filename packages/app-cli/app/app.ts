@@ -231,7 +231,7 @@ export class Application extends BaseApplication {
 	// One-shot commands must not run the background indexer. Otherwise a command run on a
 	// profile with no notes yet would complete the initial scan and mark it as done.
 	protected override async applyEmbeddingIndexerState() {
-		if (!this.hasGui()) return;
+		if (!this.isLongRunning()) return;
 		await super.applyEmbeddingIndexerState();
 	}
 
