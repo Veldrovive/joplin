@@ -12,6 +12,7 @@ import { dirname, fileExtension } from '@joplin/lib/path-utils';
 import { _ } from '@joplin/lib/locale';
 import { pathExists, readFile, readdirSync } from 'fs-extra';
 import RevisionService from '@joplin/lib/services/RevisionService';
+import DecryptionWorker from '@joplin/lib/services/DecryptionWorker';
 import shim from '@joplin/lib/shim';
 import setupCommand from './setupCommand';
 import BaseCommand from './base-command';
@@ -36,6 +37,7 @@ export class Application extends BaseApplication {
 	// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Dynamic GUI type with many optional methods
 	private gui_: any = null;
 	private cache_ = new Cache();
+	private isHeadless_ = false;
 
 	public gui() {
 		return this.gui_;
@@ -390,6 +392,23 @@ export class Application extends BaseApplication {
 	// runs, the keychain has already been setup.
 	public checkIfKeychainEnabled(argv: string[]) {
 		return argv.indexOf('version') < 0;
+	}
+
+	protected override isLongRunning() {
+		return this.hasGui() || this.isHeadless_;
+	}
+
+	// Starts the background services that the interactive UI starts, so that a process without UI
+	// keeps syncing, decrypting, indexing and maintaining the profile.
+	public async startHeadless() {
+		this.isHeadless_ = true;
+
+		ResourceService.runInBackground();
+		RevisionService.instance().runInBackground();
+		void DecryptionWorker.instance().scheduleStart();
+		reg.setupRecurrentSync();
+		await this.applyEmbeddingIndexerState();
+		this.startRotatingLogMaintenance(Setting.value('profileDir'));
 	}
 
 	public async start(argv: string[]) {
