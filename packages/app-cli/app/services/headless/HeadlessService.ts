@@ -7,12 +7,22 @@ import shim from '@joplin/lib/shim';
 import EmbeddingIndexer from '@joplin/lib/services/ai/EmbeddingIndexer';
 import { embeddingAvailability } from '@joplin/lib/services/ai/availability';
 import { ErrorBadRequest } from '@joplin/lib/services/rest/utils/errors';
+import McpServer, { PreReadSyncResult } from '@joplin/lib/services/mcp/McpServer';
+import SearchEngine from '@joplin/lib/services/search/SearchEngine';
+import AiService from '@joplin/lib/services/ai/AiService';
+import ItemChange from '@joplin/lib/models/ItemChange';
+import { ModelType } from '@joplin/lib/BaseModel';
+import { msleep } from '@joplin/utils/time';
 import Logger from '@joplin/utils/Logger';
 import { _ } from '@joplin/lib/locale';
 
 const logger = Logger.create('HeadlessService');
 
 export const minSyncInterval = 10;
+
+// MCP clients typically give up on a tool call after a minute or so, so a read waits at most this
+// long for the sync and indexing before it uses the local data.
+export const preReadSyncTimeout = 30 * 1000;
 
 export const parseSyncInterval = (value: number | string | undefined) => {
 	if (value === undefined) return null;
@@ -33,6 +43,31 @@ interface SyncActionArgs {
 	wait?: boolean;
 }
 
+const resolvesWithin = async (promise: Promise<unknown>, timeout: number) => {
+	let timeoutId: ReturnType<typeof shim.setTimeout>;
+	try {
+		return await Promise.race([
+			promise.then(() => true),
+			new Promise<boolean>(resolve => { timeoutId = shim.setTimeout(() => resolve(false), timeout); }),
+		]);
+	} finally {
+		shim.clearTimeout(timeoutId);
+	}
+};
+
+// The search indexes record the last change they processed, so they are up to date with a sync once
+// they reach the last change it made. Their update functions return immediately if a run is already
+// in progress, hence the polling.
+const waitForIndex = async (cursorKey: string, lastChangeId: number, update: ()=> Promise<void>, deadline: number) => {
+	const isUpToDate = () => (Setting.value(cursorKey) as number) >= lastChangeId;
+	while (!isUpToDate()) {
+		if (Date.now() >= deadline) return false;
+		await update();
+		if (!isUpToDate()) await msleep(200);
+	}
+	return true;
+};
+
 const errorMessages = (errors: (Error | string)[]) => {
 	return (errors ?? []).map(error => (typeof error === 'string' ? error : error?.message ?? String(error)));
 };
@@ -51,10 +86,12 @@ export default class HeadlessService {
 		this.store_ = store;
 		this.syncInterval_ = syncInterval;
 		this.unsubscribe_ = store.subscribe(this.onStateChange);
+		McpServer.instance().setPreReadSync(this.preReadSync);
 	}
 
 	public destroy() {
 		this.unsubscribe_();
+		McpServer.instance().setPreReadSync(null);
 	}
 
 	private onStateChange = () => {
@@ -114,6 +151,33 @@ export default class HeadlessService {
 			}
 		})();
 	}
+
+	// Lets agents read changes made on other devices without waiting for the next scheduled sync
+	public preReadSync = async (toolId: string): Promise<PreReadSyncResult> => {
+		if (!this.hasSyncTarget()) return {};
+		const deadline = Date.now() + preReadSyncTimeout;
+
+		if (!await resolvesWithin(this.requestSync(), preReadSyncTimeout)) {
+			return { warning: `The sync was still running after ${preReadSyncTimeout / 1000} seconds, so the results may not include recent changes from other devices. It continues in the background, so try again shortly.` };
+		}
+
+		const warnings: string[] = [];
+		if (this.store_.getState().mustAuthenticate) {
+			warnings.push('Could not sync because the sync target needs to be authenticated again, so the results may not include recent changes from other devices.');
+		} else if (this.lastSync_?.errors.length) {
+			warnings.push(`The sync completed with errors, so the results may not include all recent changes from other devices: ${this.lastSync_.errors.join('; ')}`);
+		}
+
+		let indexed = true;
+		if (toolId === 'search_notes') {
+			indexed = await waitForIndex('searchEngine.lastProcessedChangeId', await ItemChange.lastChangeId(ModelType.Note), () => SearchEngine.instance().syncTables(), deadline);
+		} else if (toolId === 'semantic_search_notes' && AiService.instance().getActiveEmbeddingProvider() && Setting.value('ai.embedding.initialScanDone')) {
+			indexed = await waitForIndex('ai.embedding.lastProcessedChangeId', await ItemChange.lastChangeId(), () => EmbeddingIndexer.instance().maintenance(), deadline);
+		}
+		if (!indexed) warnings.push('The search index was still being updated after the sync, so search results may not include the most recent changes. Try again shortly.');
+
+		return warnings.length ? { warning: warnings.join(' ') } : {};
+	};
 
 	public async status() {
 		const state = this.store_.getState();
