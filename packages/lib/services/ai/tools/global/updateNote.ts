@@ -23,6 +23,7 @@ interface Input {
 
 const tool = buildTool({
 	id: 'update_note',
+	readsNotes: true,
 	userDescription: () => _('Updated note'),
 	description: [
 		'Update an existing note. Only the fields you pass are changed; omitted fields keep their current value.',

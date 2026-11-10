@@ -2,7 +2,8 @@ import Logger from '@joplin/utils/Logger';
 import Setting from '../../models/Setting';
 import ToolIndex from '../ai/tools/ToolIndex';
 import { JsonRpcRequest, JsonRpcResponse, JsonRpcErrorCodes, McpProtocolVersion, ToolCallResult, ToolContent, ToolTextContent } from './types';
-import { ToolError, ToolImageResponse, ToolOutput } from '../ai/tools/types';
+import { JsonSchema } from '../ai/types';
+import { ToolDefinition, ToolError, ToolImageResponse, ToolOutput } from '../ai/tools/types';
 
 const logger = Logger.create('McpServer');
 
@@ -11,16 +12,36 @@ const serverVersion = '1.0.0';
 
 class InvalidParamsError extends Error {}
 
+export interface PreReadSyncResult {
+	// Shown to the client next to the tool output, for example when the sync failed
+	warning?: string;
+}
+
+// Brings the local data up to date before a tool that reads notes runs. Apps that don't set one
+// don't offer the "sync" argument.
+export type PreReadSync = (toolId: string)=> Promise<PreReadSyncResult|void>;
+
+const syncArgument = 'sync';
+
 // Routes a JSON-RPC request to the matching MCP method. The transport layer
 // (HTTP today, possibly stdio later) calls this with a parsed envelope and
 // gets back a response envelope to write.
 export default class McpServer {
 
 	private static instance_: McpServer;
+	private preReadSync_: PreReadSync|null = null;
 
 	public static instance(): McpServer {
 		if (!this.instance_) this.instance_ = new McpServer();
 		return this.instance_;
+	}
+
+	public setPreReadSync(handler: PreReadSync|null) {
+		this.preReadSync_ = handler;
+	}
+
+	private offersSync(tool: ToolDefinition) {
+		return !!this.preReadSync_ && !!tool.readsNotes;
 	}
 
 	public async handleRequest(request: JsonRpcRequest): Promise<JsonRpcResponse | null> {
@@ -79,7 +100,7 @@ export default class McpServer {
 			tools: new ToolIndex(null).getTools().map(t => ({
 				name: t.id,
 				description: t.description,
-				inputSchema: t.inputSchema,
+				inputSchema: this.offersSync(t) ? withSyncArgument(t.inputSchema) : t.inputSchema,
 			})),
 		};
 	}
@@ -94,12 +115,25 @@ export default class McpServer {
 		if (!tool) {
 			return toolErrorResult(index.describeToolNotFoundFailure(params.name));
 		}
-		const input = params.arguments ?? {};
+		const input = { ...(params.arguments ?? {}) };
+		const warnings: string[] = [];
+		if (this.offersSync(tool)) {
+			const sync = input[syncArgument] ?? true;
+			delete input[syncArgument];
+			if (typeof sync !== 'boolean') return toolErrorResult(`"${syncArgument}" must be a boolean`);
+			if (sync) {
+				const warning = await this.runPreReadSync(tool.id);
+				if (warning) warnings.push(warning);
+			}
+		}
 		try {
 			const payload = await tool.handler(input, {}) as ToolOutput;
 
 			return {
-				content: [serialisePayload(payload)],
+				content: [
+					serialisePayload(payload),
+					...warnings.map((text): ToolTextContent => ({ type: 'text', text: `Warning: ${text}` })),
+				],
 			};
 		} catch (error) {
 			if (error instanceof ToolError) {
@@ -107,6 +141,17 @@ export default class McpServer {
 			}
 			// Internal bug — let it bubble to the JSON-RPC layer as InternalError.
 			throw error;
+		}
+	}
+
+	// A failed sync shouldn't prevent reading the local copy, so it is reported as a warning instead
+	private async runPreReadSync(toolId: string) {
+		try {
+			const result = await this.preReadSync_(toolId);
+			return result ? result.warning : null;
+		} catch (error) {
+			logger.warn(`Sync before ${toolId} failed:`, error);
+			return `Could not sync before reading, so the results may not include recent changes from other devices: ${error.message}`;
 		}
 	}
 
@@ -122,6 +167,18 @@ export default class McpServer {
 		return Setting.value('mcp.enabled') as boolean;
 	}
 }
+
+const withSyncArgument = (schema: JsonSchema): JsonSchema => ({
+	...schema,
+	properties: {
+		...(schema.properties as Record<string, unknown>),
+		[syncArgument]: {
+			type: 'boolean',
+			default: true,
+			description: 'Sync with the sync target before running, so that the results include changes made on other devices. Set to false for bulk reads, for example when reading many notes in a row, as long as one call in the batch has synced.',
+		},
+	},
+});
 
 const toolErrorResult = (message: string): ToolCallResult => ({
 	content: [{ type: 'text', text: message }],

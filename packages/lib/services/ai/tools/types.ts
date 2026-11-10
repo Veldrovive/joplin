@@ -69,6 +69,8 @@ export interface ToolContext {
 
 export type ToolDefinition<Output extends ToolOutput|unknown = unknown> = ToolSpec & {
 	enabled?: boolean;
+	// Lets the MCP server offer to sync before the tool runs, so that it sees changes from other devices
+	readsNotes?: boolean;
 	handler: (input: ToolInput, context: ToolContext)=> Promise<Output>;
 	// A human-readable description of an action completed by the tool
 	userDescription: (input: ToolInput, output: Output)=> string;

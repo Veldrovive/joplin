@@ -13,6 +13,7 @@ interface Input {
 
 const tool = buildTool({
 	id: 'semantic_search_notes',
+	readsNotes: true,
 	userDescription: (input: Input) => _('Searched for: %s', input.query || _('(empty)')),
 	description: [
 		'Semantic search across notes using the local embeddings index.',

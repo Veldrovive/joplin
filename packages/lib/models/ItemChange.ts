@@ -102,8 +102,10 @@ export default class ItemChange extends BaseModel {
 		});
 	}
 
-	public static async lastChangeId() {
-		const row = await this.db().selectOne('SELECT max(id) as max_id FROM item_changes');
+	public static async lastChangeId(itemType: ModelType = null) {
+		const row = itemType === null ?
+			await this.db().selectOne('SELECT max(id) as max_id FROM item_changes') :
+			await this.db().selectOne('SELECT max(id) as max_id FROM item_changes WHERE item_type = ?', [itemType]);
 		return row && row.max_id ? row.max_id : 0;
 	}
 
