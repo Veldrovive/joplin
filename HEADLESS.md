@@ -6,7 +6,7 @@ This branch (`headless-service`, cut from upstream `dev` at `64167f5fc`) makes t
 
 ## What changed
 
-The work is split into two independent pull requests' worth of commits, plus one commit that connects them. PR 2 applies cleanly to `dev` without PR 1 and type-checks on its own.
+The work is split into two independent pull requests' worth of commits, plus one commit that connects them. PR 2 applies cleanly to `dev` without PR 1 and type-checks on its own. PR 3 (sync before MCP reads) builds on PR 2.
 
 | Commit | PR | Summary |
 |---|---|---|
@@ -15,6 +15,8 @@ The work is split into two independent pull requests' worth of commits, plus one
 | `b20972621` | 2 | All: Allow apps without GUI to sync and index changes as they happen (`packages/lib`) |
 | `eaa486a9f` | 2 | Cli: Add a headless service mode to the server command |
 | `cda6b8b02` | 1 + 2 | Cli: Run the embedding indexer in headless service mode |
+| `912e28645` | 3 | All: Allow MCP clients to sync before reading notes (`packages/lib`) |
+| `c01e9f819` | 3 | Cli: Sync before MCP reads in headless service mode |
 
 ### PR 1: local embeddings in the terminal app
 
@@ -59,6 +61,14 @@ The work is split into two independent pull requests' worth of commits, plus one
 - Requests through the `sync` endpoint: see `HeadlessService.requestSync()` above.
 - Overlap: `Synchronizer.start()` throws `alreadyStarted` when a sync is running, and `scheduleSync` swallows that. Two syncs never run at once.
 - Downloads only happen on full syncs (timer, startup, `sync` endpoint). Joplin Server can't push.
+
+### PR 3: sync before MCP reads
+
+Without this, an agent only sees changes made on other devices after the next timer sync, so a note synced from a phone or desktop could be missing for up to `--sync-interval` seconds (plus the full-text search debounce).
+
+- `packages/lib`: tools have an optional `readsNotes` flag, set on `search_notes`, `semantic_search_notes`, `read_note`, `read_notes`, `list_notebooks`, `list_tags`, `read_image` and `update_note` (it reads the body it edits, so a stale copy would cause a conflict). `McpServer.setPreReadSync(hook)` registers a hook. Only when one is registered do the flagged tools list a `sync` boolean argument (default `true`). The server strips the argument and, unless it is `false`, awaits the hook before running the tool. A warning returned by the hook, or an exception it throws, is added to the tool result as an extra `Warning: …` text item. The read still uses the local data. A non-boolean `sync` is a tool error. Desktop doesn't register a hook, so its MCP server and the chat panel's tools are unchanged.
+- `packages/app-cli`: `HeadlessService.preReadSync()` is the hook (registered in its constructor, removed in `destroy()`). With no sync target it does nothing. Otherwise it calls `requestSync()`, so concurrent reads share one sync and a sync already running is followed by a fresh one. For `search_notes` it then runs `SearchEngine.syncTables()` until the full-text cursor reaches the last note change. For `semantic_search_notes` (once the indexer's initial scan is done) it runs `EmbeddingIndexer.maintenance()` until the embedding cursor reaches the last change. Reads by id don't wait for either index. The whole hook is bounded by 30 s (`preReadSyncTimeout`); after that the read proceeds with a warning and the sync carries on in the background. Sync errors and `mustAuthenticate` are also returned as warnings.
+- Agents should pass `sync: false` for bulk reads (for example, reading many notes in a row) once one call in the batch has synced. The tool's schema description says so.
 
 ## Building the terminal app from the monorepo
 
@@ -204,11 +214,26 @@ All run on 2026-11-01 with Node 22.23.4.
 | Port already in use / `--sync-interval 5` / `abc` | exit 1 with a message |
 | First start | model downloaded (134 MB) and loaded; 2/2 notes indexed within ~30 s |
 
+**Sync before MCP reads (PR 3)**, run on 2026-11-10: profile A = `server start --service --sync-interval 3600` (so the timer never fires during the test), B creates or edits a note then runs `B sync`, then A is queried straight away:
+
+| Check | Result |
+|---|---|
+| `tools/list` | `sync` offered on exactly the 8 flagged tools |
+| `search_notes` with `sync: false` | not found (1.2 s) |
+| `search_notes` (default) | found (0.5 s, including sync and full-text index update) |
+| `semantic_search_notes` (default) on another new note | found (0.4 s) |
+| `read_note` after B edited the body, `sync: false` / default | old body (0.00 s) / new body (0.4 s) |
+| `read_note` default with nothing to sync | 0.2 s (filesystem target; a Joplin Server round trip adds network latency) |
+| `sync: "yes"` | tool error `"sync" must be a boolean` |
+
+Unit tests: `packages/app-cli` `yarn test-ci` 28 suites, 131 tests pass. `packages/lib` `services/ai`, `services/mcp` and `models/ItemChange`: 21 suites, 264 passed, 1 skipped. New tests in `McpServer.test.ts` (the argument is offered only with a hook and only on reading tools; the hook runs by default and not with `sync: false`; a warning or an exception from the hook still returns the note) and `HeadlessService.test.ts` (no sync without a sync target; `search_notes` waits for the full-text index; sync errors become a warning).
+
 **Infra live suite** (`~/infra-management/tests/joplin_mcp`, `JOPLIN_MCP_URL=http://127.0.0.1:41190/mcp JOPLIN_MCP_PROFILE=<A>`): 25 passed, 3 skipped (public tests, no `JOPLIN_MCP_PUBLIC_URL`), 3 deselected (`slow`). `test_semantic_search` **passes**: it only marks itself as an expected failure when the tool returns an error, so with this branch it passes outright (reported as PASSED, not XPASS). `read_notes` is present and enabled (it shares `read_note`'s setting), and the notification test passes. Suggested changes to that suite, not made: make `semantic_search` a real test (create a note, then poll with a related query until it is returned), add `read_notes` to `EXPECTED_TOOLS`, assert 202 for notifications, and add `status`/`sync` endpoint tests (`POST /services/headless`).
 
 ## Known issues and notes
 
-- **Full-text search lag:** `search_notes` sees a change up to about 10 s after it lands locally, because `SearchEngine.scheduleSyncTables()` debounces by 10 s (same as desktop). In the e2e run, MCP-created notes were searchable after about 2 s, and B→A notes after 12–21 s with a 15 s sync interval.
+- **Full-text search lag:** with `sync: false`, `search_notes` sees a change up to about 10 s after it lands locally, because `SearchEngine.scheduleSyncTables()` debounces by 10 s (same as desktop). In the e2e run, MCP-created notes were searchable after about 2 s, and B→A notes after 12–21 s with a 15 s sync interval. With the default `sync: true` (PR 3), the search waits for the index instead.
+- **Pre-read sync cost:** every read with the default `sync: true` makes a round trip to the sync target, even when nothing changed. That was 0.2 s on a local filesystem target; on Joplin Server it depends on latency. It runs a full sync, not a download-only one, so it also uploads pending local changes.
 - **Semantic search threshold:** `semantic_search_notes` drops results under Joplin's minimum score (0.83 for the default `normal` limit). Vague queries can return no results even when the note is indexed. That is upstream behaviour, not an indexing gap.
 - **Initial scan vs. initial sync:** on a fresh profile, the indexer's initial scan finishes before the first sync downloads anything. Notes downloaded later are indexed from the change feed, so this is harmless (verified: 508/508 indexed after a fresh sync that was interrupted by SIGTERM and resumed).
 - **One process per profile** still applies. Don't run one-shot `joplin --profile P …` commands against a profile while the service is running; use the API, MCP or the `sync` endpoint instead.
