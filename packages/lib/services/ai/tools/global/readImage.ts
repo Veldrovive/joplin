@@ -31,6 +31,7 @@ class ReadImageResponse extends ToolImageResponse {
 
 const tool = buildTool({
 	id: 'read_image',
+	readsNotes: true,
 	userDescription: (_input, output) => {
 		return _('Read image: %s', output?.resource?.title ?? _('(untitled)'));
 	},

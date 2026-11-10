@@ -12,6 +12,7 @@ const maxIds = 20;
 
 const tool = buildTool({
 	id: 'read_notes',
+	readsNotes: true,
 	userDescription: (input: Input) => _('Read %d notes', input.ids?.length ?? 0),
 	description: [
 		`Read several notes by id in one call, for example the results of a search. Returns the same title, markdown body, notebook name, tags, and timestamps as read_note, for up to ${maxIds} notes.`,

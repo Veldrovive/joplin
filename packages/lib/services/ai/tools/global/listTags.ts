@@ -4,6 +4,7 @@ import buildTool from '../utils/buildTool';
 
 const tool = buildTool({
 	id: 'list_tags',
+	readsNotes: true,
 	userDescription: () => _('Read all tags'),
 	description: 'List all tags that have at least one note attached, with their ids and titles.',
 	inputSchema: {

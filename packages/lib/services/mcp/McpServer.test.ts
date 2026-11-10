@@ -39,6 +39,10 @@ describe('McpServer', () => {
 		enableAllTools();
 	});
 
+	afterEach(() => {
+		McpServer.instance().setPreReadSync(null);
+	});
+
 	test('returns protocol version and server info on initialize', async () => {
 		const response = await McpServer.instance().handleRequest({
 			jsonrpc: '2.0', id: 1, method: 'initialize', params: {},
@@ -121,6 +125,54 @@ describe('McpServer', () => {
 			jsonrpc: '2.0', method: 'notifications/initialized',
 		});
 		expect(response).toBeNull();
+	});
+
+	test('offers the sync argument on tools that read notes only when the app can sync before reading', async () => {
+		const syncableTools = async () => {
+			const response = await McpServer.instance().handleRequest({ jsonrpc: '2.0', id: 1, method: 'tools/list' });
+			type ToolSlice = { name: string; inputSchema: { properties: Record<string, unknown> } };
+			return response.result.tools.filter((t: ToolSlice) => t.inputSchema.properties.sync).map((t: ToolSlice) => t.name);
+		};
+
+		expect(await syncableTools()).toEqual([]);
+
+		McpServer.instance().setPreReadSync(async () => {});
+		const names = await syncableTools();
+		expect(names).toEqual(expect.arrayContaining(['search_notes', 'read_note', 'read_notes', 'update_note']));
+		expect(names).not.toContain('create_note');
+	});
+
+	test.each([
+		[{}, 1],
+		[{ sync: true }, 1],
+		[{ sync: false }, 0],
+	])('syncs before reading a note with arguments %j', async (syncArgs, expectedSyncCount) => {
+		const preReadSync = jest.fn(async () => {});
+		McpServer.instance().setPreReadSync(preReadSync);
+		const note = await Note.save({ title: 'Synced' });
+
+		const response = await McpServer.instance().handleRequest({
+			jsonrpc: '2.0', id: 1, method: 'tools/call',
+			params: { name: 'read_note', arguments: { id: note.id, ...syncArgs } },
+		});
+		expect(parseToolResult(response.result).title).toBe('Synced');
+		expect(preReadSync).toHaveBeenCalledTimes(expectedSyncCount);
+	});
+
+	test.each([
+		['returns a warning', async () => ({ warning: 'Sync is slow' }), 'Warning: Sync is slow'],
+		['throws', async (): Promise<void> => { throw new Error('Network down'); }, 'Network down'],
+	])('still reads the note when the sync %s', async (_label, preReadSync, expectedWarning) => {
+		McpServer.instance().setPreReadSync(preReadSync);
+		const note = await Note.save({ title: 'Local copy' });
+
+		const response = await withWarningSilenced(/Sync before read_note failed/, () => McpServer.instance().handleRequest({
+			jsonrpc: '2.0', id: 1, method: 'tools/call',
+			params: { name: 'read_note', arguments: { id: note.id } },
+		}));
+		expect(response.result.isError).toBeUndefined();
+		expect(parseToolResult(response.result).title).toBe('Local copy');
+		expect(response.result.content[1].text).toContain(expectedWarning);
 	});
 
 	test('read_note returns title body notebook and tags', async () => {

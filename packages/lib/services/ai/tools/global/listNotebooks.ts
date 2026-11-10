@@ -5,6 +5,7 @@ import buildTool from '../utils/buildTool';
 
 const tool = buildTool({
 	id: 'list_notebooks',
+	readsNotes: true,
 	userDescription: () => _('Read notebooks'),
 	description: 'List all notebooks (folders) with their ids, titles, and parent ids. Returned in a flat list — use parent_id to reconstruct the tree.',
 	inputSchema: {

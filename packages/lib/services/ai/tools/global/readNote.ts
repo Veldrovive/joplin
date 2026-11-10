@@ -16,6 +16,7 @@ export const defaultMaxChars = 8000;
 
 const tool = buildTool({
 	id: 'read_note',
+	readsNotes: true,
 	userDescription: (_input, output) => _('Read note: %s', output.title ?? _('(untitled)')),
 	description: [
 		'Read a single note by id. Returns title, markdown body, notebook name, tags, and timestamps.',
