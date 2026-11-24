@@ -7,7 +7,7 @@ import { reg } from '@joplin/lib/registry';
 import { setupDatabaseAndSynchronizer, switchClient } from '@joplin/lib/testing/test-utils';
 import app from '../../app';
 import { setupApplication } from '../../utils/testUtils';
-import HeadlessService, { parseSyncInterval } from './HeadlessService';
+import HeadlessService, { parsePublicUrl, parseSyncInterval } from './HeadlessService';
 
 let service: HeadlessService = null;
 
@@ -42,6 +42,22 @@ describe('HeadlessService', () => {
 			expect(() => parseSyncInterval(value)).toThrow();
 		} else {
 			expect(parseSyncInterval(value)).toBe(expected);
+		}
+	});
+
+	test.each([
+		[undefined, null],
+		['', null],
+		['https://example.com', 'https://example.com/'],
+		['http://127.0.0.1:41184/', 'http://127.0.0.1:41184/'],
+		['example.com', 'error'],
+		['ftp://example.com', 'error'],
+		['https://example.com/?token=abc', 'error'],
+	])('should parse the public URL %s', (value, expected) => {
+		if (expected === 'error') {
+			expect(() => parsePublicUrl(value)).toThrow();
+		} else {
+			expect(parsePublicUrl(value)).toBe(expected);
 		}
 	});
 

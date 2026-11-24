@@ -11,6 +11,7 @@ import manageTags from './manageTags';
 import createNotebook from './createNotebook';
 import readImage from './readImage';
 import uploadResource from './uploadResource';
+import createUpload from './createUpload';
 
 export default [
 	searchNotes,
@@ -26,4 +27,5 @@ export default [
 	createNotebook,
 	readImage,
 	uploadResource,
+	createUpload,
 ];

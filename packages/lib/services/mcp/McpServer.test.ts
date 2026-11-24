@@ -6,6 +6,7 @@ import Resource from '../../models/Resource';
 import SearchEngine from '../search/SearchEngine';
 import { db, setupDatabaseAndSynchronizer, supportDir, switchClient, withWarningSilenced } from '../../testing/test-utils';
 import McpServer from './McpServer';
+import PendingUploads, { uploadPathRegex } from './PendingUploads';
 import { McpProtocolVersion } from './types';
 import shim from '../../shim';
 import { join } from 'path';
@@ -775,5 +776,59 @@ describe('McpServer', () => {
 		expect(result.isError).toBe(true);
 		expect(result.content[0].text).toContain(expectedMessage);
 		expect(await Resource.all()).toHaveLength(0);
+	});
+
+	test('create_upload returns a single-use upload URL', async () => {
+		const folder = await Folder.save({ title: 'Folder' });
+		const note = await Note.save({ title: 'Test', body: 'Text', parent_id: folder.id });
+		PendingUploads.instance().setPublicUrl('https://notes.example.com/');
+
+		try {
+			const response = await McpServer.instance().handleRequest({
+				jsonrpc: '2.0', id: 1, method: 'tools/call',
+				params: { name: 'create_upload', arguments: { filename: '/tmp/report.pdf', note_id: note.id, position: 'prepend' } },
+			});
+			expect(response.result.isError).toBeFalsy();
+			const output = parseToolResult(response.result);
+
+			expect(output.upload_url.startsWith('https://notes.example.com/mcp/upload/')).toBe(true);
+			expect(uploadPathRegex.test(output.upload_url.substring('https://notes.example.com/'.length))).toBe(true);
+			expect(output.curl).toContain(output.upload_url);
+			expect(new Date(output.expires_at).getTime()).toBeGreaterThan(Date.now());
+
+			const id = output.upload_url.split('/').pop();
+			expect(PendingUploads.instance().take(id)).toMatchObject({ filename: 'report.pdf', noteId: note.id, position: 'prepend' });
+			expect(PendingUploads.instance().take(id)).toBe(null);
+		} finally {
+			PendingUploads.instance().setPublicUrl(null);
+			PendingUploads.instance().clear();
+		}
+	});
+
+	test('create_upload points to this computer by default, and shares the upload_resource setting', async () => {
+		const call = () => McpServer.instance().handleRequest({
+			jsonrpc: '2.0', id: 1, method: 'tools/call',
+			params: { name: 'create_upload', arguments: { filename: 'a.zip' } },
+		});
+
+		const output = parseToolResult((await call()).result);
+		expect(output.upload_url).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/mcp\/upload\/[0-9a-f]{64}$/);
+
+		Setting.setValue('ai.tool.upload_resource.enabled', false);
+		expect((await call()).result.isError).toBe(true);
+		PendingUploads.instance().clear();
+	});
+
+	test.each([
+		['no file name', {}, 'filename'],
+		['an unknown note', { filename: 'a.txt', note_id: '0123456789abcdef0123456789abcdef' }, 'Note not found'],
+		['an invalid position', { filename: 'a.txt', position: 'middle' }, 'Invalid position'],
+	])('create_upload rejects %s', async (_label, args, expectedMessage) => {
+		const response = await McpServer.instance().handleRequest({
+			jsonrpc: '2.0', id: 1, method: 'tools/call',
+			params: { name: 'create_upload', arguments: args },
+		});
+		expect(response.result.isError).toBe(true);
+		expect(response.result.content[0].text).toContain(expectedMessage);
 	});
 });

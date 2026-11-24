@@ -1,5 +1,3 @@
-import Note from '../../../../models/Note';
-import Resource from '../../../../models/Resource';
 import Setting from '../../../../models/Setting';
 import shim from '../../../../shim';
 import uuid from '../../../../uuid';
@@ -9,6 +7,7 @@ import { basename, fileExtension, safeFilename } from '@joplin/utils/path';
 import { DownloadHandler } from '../../../../types';
 import buildTool from '../utils/buildTool';
 import { ToolError, ToolInput } from '../types';
+import { attachFile, fileNameOnly, loadNoteToAttachTo, maxAttachmentSize, parsePosition } from '../utils/attachFile';
 
 interface Input {
 	filename?: string;
@@ -16,12 +15,10 @@ interface Input {
 	text?: string;
 	url?: string;
 	note_id?: string;
-	position?: 'append'|'prepend';
+	position?: string;
 }
 
-// Large enough for photos, PDFs and short recordings. Anything bigger is better attached from a
-// Joplin client.
-export const maxDownloadSize = 100 * 1024 * 1024;
+export const maxDownloadSize = maxAttachmentSize;
 const downloadTimeout = 60 * 1000;
 const sourceParameters = ['data_base64', 'text', 'url'] as const;
 
@@ -48,12 +45,6 @@ const decodeBase64 = (data: string) => {
 		throw new ToolError('"data_base64" is not valid base64');
 	}
 	return Buffer.from(normalised, 'base64');
-};
-
-// Drops any directory included in the name. basename() throws on an empty path.
-const fileNameOnly = (path: string) => {
-	const trimmed = path.trim().replace(/\\/g, '/').replace(/\/+$/, '');
-	return trimmed ? basename(trimmed) : '';
 };
 
 const filenameFromUrl = (url: URL) => {
@@ -135,10 +126,7 @@ const tool = buildTool({
 			throw new ToolError('"filename" must be a string');
 		}
 
-		const position = input.position ?? 'append';
-		if (!['append', 'prepend'].includes(position)) {
-			throw new ToolError(`Invalid position: ${JSON.stringify(position)}`);
-		}
+		const position = parsePosition(input.position);
 
 		let url: URL|null = null;
 		if (source === 'url') {
@@ -156,15 +144,7 @@ const tool = buildTool({
 		if (!title && url) title = filenameFromUrl(url);
 		if (!title && source !== 'url') throw new ToolError('Missing "filename" parameter');
 
-		// Check the note before creating anything, so that a wrong id doesn't leave an orphaned
-		// attachment behind.
-		let note = null;
-		if (input.note_id) {
-			note = await Note.load(input.note_id);
-			if (!note || note.is_conflict || (note.deleted_time && note.deleted_time > 0)) {
-				throw new ToolError(`Note not found: ${input.note_id}`);
-			}
-		}
+		await loadNoteToAttachTo(input.note_id);
 
 		const tempDir = `${Setting.value('tempDir')}/mcp-upload-${uuid.createNano()}`;
 		await shim.fsDriver().mkdir(tempDir);
@@ -188,29 +168,7 @@ const tool = buildTool({
 				}
 			}
 
-			// Keep the file as it was provided: resizing would silently change what the model uploaded
-			const resource = await shim.createResourceFromPath(filePath, { title: title || basename(filePath) }, { resizeLargeImages: 'never' });
-			const markdown = Resource.markupTag(resource, note?.markup_language);
-
-			if (note) {
-				// Load the body again, in case it changed while the file was downloading
-				const current = await Note.load(note.id);
-				const body = current.body ?? '';
-				let newBody = markdown;
-				if (body.trim()) {
-					newBody = position === 'prepend' ? `${markdown}\n\n${body}` : `${body.replace(/\n+$/, '')}\n\n${markdown}`;
-				}
-				await Note.save({ id: note.id, body: newBody });
-			}
-
-			return {
-				id: resource.id,
-				title: resource.title,
-				mime: resource.mime,
-				size: resource.size,
-				markdown,
-				...(note ? { note_id: note.id } : {}),
-			};
+			return await attachFile({ filePath, title, noteId: input.note_id, position });
 		} finally {
 			await shim.fsDriver().remove(tempDir);
 		}

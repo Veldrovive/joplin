@@ -1722,6 +1722,7 @@ packages/lib/services/ai/tools/ToolIndex.js
 packages/lib/services/ai/tools/buildEditorTools.js
 packages/lib/services/ai/tools/global/createNote.js
 packages/lib/services/ai/tools/global/createNotebook.js
+packages/lib/services/ai/tools/global/createUpload.js
 packages/lib/services/ai/tools/global/deleteNote.js
 packages/lib/services/ai/tools/global/index.js
 packages/lib/services/ai/tools/global/listNotebooks.js
@@ -1737,6 +1738,7 @@ packages/lib/services/ai/tools/global/uploadResource.js
 packages/lib/services/ai/tools/types.js
 packages/lib/services/ai/tools/utils/applyNoteEdits.test.js
 packages/lib/services/ai/tools/utils/applyNoteEdits.js
+packages/lib/services/ai/tools/utils/attachFile.js
 packages/lib/services/ai/tools/utils/buildTool.js
 packages/lib/services/ai/tools/utils/loadNoteForReading.js
 packages/lib/services/ai/tools/utils/noteOutline.test.js
@@ -1854,6 +1856,7 @@ packages/lib/services/keychain/KeychainServiceDriver.node.js
 packages/lib/services/keychain/KeychainServiceDriverBase.js
 packages/lib/services/mcp/McpServer.test.js
 packages/lib/services/mcp/McpServer.js
+packages/lib/services/mcp/PendingUploads.js
 packages/lib/services/mcp/types.js
 packages/lib/services/noteList/checkboxPieCss.js
 packages/lib/services/noteList/defaultLeftToRightListRenderer.js

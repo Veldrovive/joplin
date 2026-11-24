@@ -33,6 +33,21 @@ export const parseSyncInterval = (value: number | string | undefined) => {
 	return interval;
 };
 
+// The address at which clients reach the server, when it is behind a reverse proxy or tunnel
+export const parsePublicUrl = (value: string|undefined) => {
+	if (value === undefined || value === null || value === '') return null;
+	let url: URL|null = null;
+	try {
+		url = new URL(`${value}`);
+	} catch (error) {
+		// Handled below
+	}
+	if (!url || !['http:', 'https:'].includes(url.protocol) || url.search || url.hash) {
+		throw new Error(_('Invalid public URL: %s', value));
+	}
+	return url.toString();
+};
+
 export interface SyncResult {
 	startTime: number;
 	endTime: number;

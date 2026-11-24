@@ -14,6 +14,7 @@ import route_revisions from './routes/revisions';
 import route_mcp from './routes/mcp';
 
 import { ltrimSlashes } from '../../path-utils';
+import { uploadPathRegex } from '../mcp/PendingUploads';
 const md5 = require('md5');
 
 export enum RequestMethod {
@@ -261,6 +262,10 @@ export default class Api {
 		for (let i = 0; i < whiteList.length; i++) {
 			if (whiteList[i][0] === request.method && whiteList[i][1] === request.path) return;
 		}
+
+		// An upload announced with the create_upload MCP tool. The single-use id in the path is the
+		// credential, and the route checks it.
+		if (request.method === RequestMethod.POST && uploadPathRegex.test(request.path)) return;
 
 		// If the API has been initialized without a token, it means no auth is
 		// needed. This is for example when it is used as the plugin data API.

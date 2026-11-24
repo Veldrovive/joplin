@@ -144,6 +144,11 @@ export default class McpServer {
 		}
 	}
 
+	// For the upload route, which edits a note outside of a tool call
+	public async syncBeforeEditingNote() {
+		if (this.preReadSync_) await this.runPreReadSync('update_note');
+	}
+
 	// A failed sync shouldn't prevent reading the local copy, so it is reported as a warning instead
 	private async runPreReadSync(toolId: string) {
 		try {

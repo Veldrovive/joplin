@@ -6,7 +6,8 @@ import shim from '@joplin/lib/shim';
 import { reg } from '@joplin/lib/registry';
 import EmbeddingIndexer from '@joplin/lib/services/ai/EmbeddingIndexer';
 import app from './app';
-import HeadlessService, { minSyncInterval, parseSyncInterval } from './services/headless/HeadlessService';
+import PendingUploads from '@joplin/lib/services/mcp/PendingUploads';
+import HeadlessService, { minSyncInterval, parsePublicUrl, parseSyncInterval } from './services/headless/HeadlessService';
 
 const logger = Logger.create('command-server');
 
@@ -15,6 +16,7 @@ interface ServerCommandOptions {
 	quiet?: boolean;
 	service?: boolean;
 	'sync-interval'?: number | string;
+	'public-url'?: string;
 }
 
 // Leaves time for a supervisor's stop timeout (usually 10 seconds) before it kills the process.
@@ -36,6 +38,7 @@ class Command extends BaseCommand {
 			['--quiet', 'Log less information to the console. More verbose logs will still be available through log-clipper.txt.'],
 			['--service', 'Run as a long-running headless service: in addition to the server, sync at startup, on a timer and after changes, and run the background services (search and AI indexing, decryption, etc.). Logs to stdout and stops cleanly on SIGTERM or SIGINT. Valid only for the `start` subcommand.'],
 			['--sync-interval <seconds>', `With --service, the interval between full syncs, in seconds (minimum ${minSyncInterval}). Defaults to the sync.interval config variable, which is not modified.`],
+			['--public-url <url>', 'With --service, the address at which clients reach this server, when it is behind a reverse proxy or tunnel (for example https://example.com). Used for the upload URLs given to MCP clients, which otherwise point to 127.0.0.1.'],
 		];
 	}
 
@@ -44,6 +47,7 @@ class Command extends BaseCommand {
 		const isService = command === 'start' && !!args.options.service;
 		const syncInterval = isService ? parseSyncInterval(args.options['sync-interval']) : null;
 		const service = isService ? new HeadlessService(app().store(), syncInterval) : null;
+		if (isService) PendingUploads.instance().setPublicUrl(parsePublicUrl(args.options['public-url']));
 
 		const ClipperServer = require('@joplin/lib/ClipperServer').default;
 		ClipperServer.instance().initialize(service ? service.actionApi() : null);

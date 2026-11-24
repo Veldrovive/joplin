@@ -55,6 +55,7 @@ Tool handlers return their raw payload. The dispatcher JSON-serialises it into M
 | `manage_tags` | Add/remove tags by title. Missing tags in `add` are created. | off |
 | `create_notebook` | Optionally nested under a parent. | off |
 | `upload_resource` | Creates an attachment from base64 data, text or a public URL, and optionally links it from a note. | off |
+| `create_upload` | Returns a single-use URL to which a client with a shell can send a large local file (`POST /mcp/upload/<id>`, multipart). Shares the `upload_resource` setting. | off |
 
 Write tools default off so users grant write access deliberately.
 

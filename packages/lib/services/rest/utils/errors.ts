@@ -31,3 +31,8 @@ export class ErrorBadRequest extends ApiError {
 		super(message, 400);
 	}
 }
+export class ErrorPayloadTooLarge extends ApiError {
+	public constructor(message = 'Payload Too Large') {
+		super(message, 413);
+	}
+}
