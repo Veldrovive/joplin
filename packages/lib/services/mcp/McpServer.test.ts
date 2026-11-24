@@ -2,12 +2,14 @@ import Setting from '../../models/Setting';
 import Note from '../../models/Note';
 import Folder from '../../models/Folder';
 import Tag from '../../models/Tag';
+import Resource from '../../models/Resource';
 import SearchEngine from '../search/SearchEngine';
 import { db, setupDatabaseAndSynchronizer, supportDir, switchClient, withWarningSilenced } from '../../testing/test-utils';
 import McpServer from './McpServer';
 import { McpProtocolVersion } from './types';
 import shim from '../../shim';
 import { join } from 'path';
+import { readFile, writeFile } from 'fs-extra';
 
 const allToolSettings = [
 	'ai.tool.search_notes.enabled',
@@ -21,6 +23,7 @@ const allToolSettings = [
 	'ai.tool.delete_note.enabled',
 	'ai.tool.manage_tags.enabled',
 	'ai.tool.create_notebook.enabled',
+	'ai.tool.upload_resource.enabled',
 ];
 
 const enableAllTools = () => {
@@ -652,5 +655,125 @@ describe('McpServer', () => {
 		expect(content.type).toBe('image');
 		expect(content.mimeType).toContain('image/');
 		expect(content.data).toBeTruthy();
+	});
+
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any -- arguments are JSON-shaped
+	const callUploadResource = async (args: any) => {
+		const response = await McpServer.instance().handleRequest({
+			jsonrpc: '2.0', id: 1, method: 'tools/call',
+			params: { name: 'upload_resource', arguments: args },
+		});
+		expect(response.error).toBeFalsy();
+		return response.result;
+	};
+
+	test('upload_resource stores base64 content and adds it to a note', async () => {
+		const folder = await Folder.save({ title: 'Folder' });
+		const note = await Note.save({ title: 'Test', body: 'Existing text\n', parent_id: folder.id });
+		const data = await readFile(join(supportDir, 'photo.jpg'));
+
+		const result = await callUploadResource({
+			filename: 'pictures/my photo.jpg', data_base64: data.toString('base64'), note_id: note.id,
+		});
+		expect(result.isError).toBeFalsy();
+		const output = parseToolResult(result);
+
+		const resource = await Resource.load(output.id);
+		expect(resource.title).toBe('my photo.jpg');
+		expect(resource.mime).toBe('image/jpeg');
+		expect(resource.size).toBe(data.length);
+		expect((await readFile(Resource.fullPath(resource))).equals(data)).toBe(true);
+		expect(output).toMatchObject({
+			title: 'my photo.jpg', mime: 'image/jpeg', size: data.length, note_id: note.id,
+			markdown: `![my photo.jpg](:/${resource.id})`,
+		});
+
+		const updated = await Note.load(note.id);
+		expect(updated.body).toBe(`Existing text\n\n![my photo.jpg](:/${resource.id})`);
+	});
+
+	test('upload_resource stores text and returns a link when no note is given', async () => {
+		const result = await callUploadResource({ filename: 'data.csv', text: 'a,b\n1,é\n' });
+		expect(result.isError).toBeFalsy();
+		const output = parseToolResult(result);
+
+		const resource = await Resource.load(output.id);
+		expect(resource.mime).toBe('text/csv');
+		expect(await readFile(Resource.fullPath(resource), 'utf8')).toBe('a,b\n1,é\n');
+		expect(output.markdown).toBe(`[data.csv](:/${resource.id})`);
+		expect(output.note_id).toBeUndefined();
+	});
+
+	test('upload_resource can add the attachment at the start of a note, and accepts data URLs', async () => {
+		const folder = await Folder.save({ title: 'Folder' });
+		const note = await Note.save({ title: 'Test', body: 'Existing text', parent_id: folder.id });
+
+		const result = await callUploadResource({
+			filename: 'a.txt', data_base64: `data:text/plain;base64,${Buffer.from('hello').toString('base64')}`, note_id: note.id, position: 'prepend',
+		});
+		const output = parseToolResult(result);
+
+		expect(await readFile(Resource.fullPath(await Resource.load(output.id)), 'utf8')).toBe('hello');
+		expect((await Note.load(note.id)).body).toBe(`[a.txt](:/${output.id})\n\nExisting text`);
+	});
+
+	test('upload_resource downloads from public URLs only', async () => {
+		const data = await readFile(join(supportDir, 'photo.jpg'));
+		// eslint-disable-next-line @typescript-eslint/no-explicit-any -- the mock only implements what the tool uses
+		const fetchBlob = jest.spyOn(shim, 'fetchBlob').mockImplementation(async (_url: string, options: any) => {
+			await writeFile(options.path, data);
+			return { ok: true, status: 200, headers: new Headers({ 'content-type': 'image/jpeg; charset=binary' }) };
+		});
+
+		try {
+			const result = await callUploadResource({ url: 'https://example.com/images/photo%20one?size=large' });
+			expect(result.isError).toBeFalsy();
+			const output = parseToolResult(result);
+
+			expect(fetchBlob).toHaveBeenCalledTimes(1);
+			expect(fetchBlob.mock.calls[0][0]).toBe('https://example.com/images/photo%20one?size=large');
+			expect(fetchBlob.mock.calls[0][1].publicNetworkOnly).toBe(true);
+
+			// The extension comes from the content type when the URL has none
+			const resource = await Resource.load(output.id);
+			expect(resource.title).toBe('photo one.jpg');
+			expect(resource.mime).toBe('image/jpeg');
+			expect(resource.size).toBe(data.length);
+
+			fetchBlob.mockClear();
+			const fileResult = await callUploadResource({ url: 'file:///etc/passwd' });
+			expect(fileResult.isError).toBe(true);
+			expect(fetchBlob).not.toHaveBeenCalled();
+		} finally {
+			fetchBlob.mockRestore();
+		}
+	});
+
+	test('upload_resource reports failed downloads', async () => {
+		const fetchBlob = jest.spyOn(shim, 'fetchBlob').mockImplementation(async () => {
+			return { ok: false, status: 404, headers: new Headers() };
+		});
+		try {
+			const result = await callUploadResource({ url: 'https://example.com/missing.png' });
+			expect(result.isError).toBe(true);
+			expect(result.content[0].text).toContain('HTTP 404');
+			expect(await Resource.all()).toHaveLength(0);
+		} finally {
+			fetchBlob.mockRestore();
+		}
+	});
+
+	test.each([
+		['no content', { filename: 'a.txt' }, 'exactly one'],
+		['two sources', { filename: 'a.txt', text: 'a', url: 'https://example.com/a.txt' }, 'exactly one'],
+		['no file name', { text: 'a' }, 'filename'],
+		['invalid base64', { filename: 'a.bin', data_base64: 'not base64!' }, 'not valid base64'],
+		['an invalid position', { filename: 'a.txt', text: 'a', position: 'middle' }, 'Invalid position'],
+		['an unknown note', { filename: 'a.txt', text: 'a', note_id: '0123456789abcdef0123456789abcdef' }, 'Note not found'],
+	])('upload_resource rejects %s without creating an attachment', async (_label, args, expectedMessage) => {
+		const result = await callUploadResource(args);
+		expect(result.isError).toBe(true);
+		expect(result.content[0].text).toContain(expectedMessage);
+		expect(await Resource.all()).toHaveLength(0);
 	});
 });

@@ -1043,6 +1043,17 @@ const builtInMetadata = (Setting: typeof SettingType) => {
 			storage: SettingStorage.File,
 		},
 
+		'ai.tool.upload_resource.enabled': {
+			value: false,
+			type: SettingItemType.Bool,
+			public: true,
+			section: 'ai.tools',
+			appTypes: [AppType.Desktop, AppType.Cli],
+			show: showAiTools,
+			label: () => _('Allow uploading attachments'),
+			storage: SettingStorage.File,
+		},
+
 		'ai.tool.semantic_search_notes.enabled': {
 			value: false,
 			type: SettingItemType.Bool,

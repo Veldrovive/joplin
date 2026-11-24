@@ -10,6 +10,7 @@ import deleteNote from './deleteNote';
 import manageTags from './manageTags';
 import createNotebook from './createNotebook';
 import readImage from './readImage';
+import uploadResource from './uploadResource';
 
 export default [
 	searchNotes,
@@ -24,4 +25,5 @@ export default [
 	manageTags,
 	createNotebook,
 	readImage,
+	uploadResource,
 ];

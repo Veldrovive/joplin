@@ -54,6 +54,7 @@ Tool handlers return their raw payload. The dispatcher JSON-serialises it into M
 | `delete_note` | Move to trash. Reversible by the user. | off |
 | `manage_tags` | Add/remove tags by title. Missing tags in `add` are created. | off |
 | `create_notebook` | Optionally nested under a parent. | off |
+| `upload_resource` | Creates an attachment from base64 data, text or a public URL, and optionally links it from a note. | off |
 
 Write tools default off so users grant write access deliberately.
 
